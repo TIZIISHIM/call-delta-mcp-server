@@ -1,6 +1,6 @@
 """
 CallDelta MCP Server - Earnings Call Transcript Delta Intelligence
-
+Deployed on Railway with HTTP transport.
 """
 
 import json
@@ -10,7 +10,6 @@ from typing import Dict
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from sse_starlette.sse import EventSourceResponse
 import uvicorn
 
 from transcript_fetcher import TranscriptFetcher
@@ -39,10 +38,7 @@ async def root():
 
 @app.post("/call")
 async def handle_tool_call(request: Request):
-    """
-    Handle MCP tool calls.
-    This is the main endpoint that Context Protocol will call.
-    """
+    """Handle MCP tool calls."""
     body = await request.json()
     
     tool_name = body.get("tool")
