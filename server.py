@@ -16,8 +16,8 @@ app = FastAPI(title="CallDelta MCP Server")
 fetcher = TranscriptFetcher()
 sentiment_client = HuggingFaceClient()
 
-# Store active connections (simplified)
-active_connections = {}
+# MCP protocol version
+PROTOCOL_VERSION = "2024-11-05"
 
 
 @app.get("/")
@@ -49,9 +49,9 @@ async def sse_endpoint(request: Request):
             "data": f"/messages?sessionId={session_id}"
         }
         
-        # Keep connection alive
+        # Keep connection alive with periodic pings
         while await request.is_disconnected() == False:
-            await asyncio.sleep(1)
+            await asyncio.sleep(30)
             yield {
                 "event": "ping",
                 "data": ""
@@ -62,18 +62,61 @@ async def sse_endpoint(request: Request):
 
 @app.post("/messages")
 async def messages_endpoint(request: Request):
-    """Handle MCP messages."""
+    """Handle MCP JSON-RPC messages."""
     try:
         body = await request.json()
-    except:
-        body = {}
+    except Exception as e:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "jsonrpc": "2.0",
+                "error": {
+                    "code": -32700,
+                    "message": f"Parse error: {str(e)}"
+                }
+            }
+        )
     
     method = body.get("method", "")
     params = body.get("params", {})
     msg_id = body.get("id")
     
-    if method == "listTools":
-        # Return list of available tools
+    print(f"Received method: {method}, id: {msg_id}")
+    
+    # Handle initialize method (MCP handshake)
+    if method == "initialize":
+        result = {
+            "jsonrpc": "2.0",
+            "id": msg_id,
+            "result": {
+                "protocolVersion": PROTOCOL_VERSION,
+                "capabilities": {
+                    "tools": {},
+                    "experimental": {}
+                },
+                "serverInfo": {
+                    "name": "calldelta-mcp-server",
+                    "version": "4.0.0"
+                }
+            }
+        }
+        return JSONResponse(content=result)
+    
+    # Handle initialized notification (no response needed)
+    elif method == "initialized":
+        # This is a notification, not a request - no response
+        return Response(status_code=202)
+    
+    # Handle ping (keep alive)
+    elif method == "ping":
+        return JSONResponse(content={
+            "jsonrpc": "2.0",
+            "id": msg_id,
+            "result": {}
+        })
+    
+    # Handle listTools
+    elif method == "tools/list":
         result = {
             "jsonrpc": "2.0",
             "id": msg_id,
@@ -128,7 +171,8 @@ async def messages_endpoint(request: Request):
         }
         return JSONResponse(content=result)
     
-    elif method == "callTool":
+    # Handle tools/call
+    elif method == "tools/call":
         tool_name = params.get("name", "")
         arguments = params.get("arguments", {})
         
@@ -175,6 +219,7 @@ async def messages_endpoint(request: Request):
                 }
             )
     
+    # Unknown method
     else:
         return JSONResponse(
             status_code=400,
@@ -189,32 +234,6 @@ async def messages_endpoint(request: Request):
         )
 
 
-@app.post("/call")
-async def call_endpoint(request: Request):
-    """Legacy endpoint - kept for backward compatibility."""
-    try:
-        body = await request.json()
-    except:
-        body = {}
-    
-    tool_name = body.get("tool", "")
-    arguments = body.get("arguments", {})
-    
-    if tool_name == "compare_earnings_calls":
-        result = await compare_earnings_calls(arguments)
-        return JSONResponse(content=result)
-    
-    elif tool_name == "analyze_sentiment":
-        result = await analyze_sentiment(arguments)
-        return JSONResponse(content=result)
-    
-    else:
-        return JSONResponse(
-            status_code=400,
-            content={"error": f"Unknown tool: {tool_name}"}
-        )
-
-
 async def compare_earnings_calls(args: dict) -> dict:
     ticker = args.get("ticker", "").upper()
     current_year = args.get("current_year")
@@ -225,22 +244,25 @@ async def compare_earnings_calls(args: dict) -> dict:
     if not ticker:
         return {"error": "Ticker is required"}
     
+    if not all([current_year, current_quarter, previous_year, previous_quarter]):
+        return {"error": "Year and quarter fields are required"}
+    
     current = fetcher.fetch_transcript(ticker, current_year, current_quarter)
     
-    if current['status'] == 'error':
+    if current.get('status') == 'error':
         return {
             "error": "Failed to fetch current transcript",
             "source_error": current,
-            "user_action": f"Transcript for {ticker} Q{current_quarter} {current_year} is not available."
+            "user_action": f"Transcript for {ticker} Q{current_quarter} {current_year} is not available. Try a different ticker or quarter."
         }
     
     previous = fetcher.fetch_transcript(ticker, previous_year, previous_quarter)
     
-    if previous['status'] == 'error':
+    if previous.get('status') == 'error':
         return {
             "error": "Failed to fetch previous transcript",
             "source_error": previous,
-            "user_action": f"Transcript for {ticker} Q{previous_quarter} {previous_year} is not available."
+            "user_action": f"Transcript for {ticker} Q{previous_quarter} {previous_year} is not available. Try a different ticker or quarter."
         }
     
     comparison = sentiment_client.compare_with_evidence(
@@ -257,16 +279,16 @@ async def compare_earnings_calls(args: dict) -> dict:
             "current": {
                 "source": current.get('source_used', 'Unknown'),
                 "url": current.get('url'),
-                "status": current['status']
+                "status": current.get('status')
             },
             "previous": {
                 "source": previous.get('source_used', 'Unknown'),
                 "url": previous.get('url'),
-                "status": previous['status']
+                "status": previous.get('status')
             }
         },
         "sentiment_analysis": comparison,
-        "transparency_note": "All sentiment claims are backed by exact sentence-level evidence.",
+        "transparency_note": "All sentiment claims are backed by exact sentence-level evidence. See evidence arrays for exact sentences and scores.",
         "query_timestamp": datetime.now().isoformat()
     }
 
@@ -287,7 +309,7 @@ async def analyze_sentiment(args: dict) -> dict:
         "analysis": result,
         "text_preview": text[:200] + "..." if len(text) > 200 else text,
         "query_timestamp": datetime.now().isoformat(),
-        "transparency_note": "Sentiment analysis performed with sentence-level evidence."
+        "transparency_note": "Sentiment analysis performed with sentence-level evidence. Each sentence shows its individual score."
     }
 
 
@@ -296,4 +318,5 @@ if __name__ == "__main__":
     print(f"Starting CallDelta MCP Server on port {port}")
     print(f"SSE endpoint: http://0.0.0.0:{port}/sse")
     print(f"Messages endpoint: http://0.0.0.0:{port}/messages")
+    print(f"MCP Protocol Version: {PROTOCOL_VERSION}")
     uvicorn.run(app, host="0.0.0.0", port=port)
