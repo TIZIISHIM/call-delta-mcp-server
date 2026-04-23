@@ -1,8 +1,4 @@
-"""
-CallDelta MCP Server - Complete Working Version
-Uses Hugging Face Inference API for sentiment (no local ML models).
-Implements fallback chain and transparent materiality.
-"""
+
 
 import os
 import json
@@ -24,8 +20,8 @@ async def root():
     return {
         "status": "healthy",
         "service": "CallDelta MCP Server",
-        "version": "3.0.0",
-        "features": ["fallback_chain", "transparent_materiality", "huggingface_inference"],
+        "version": "4.0.0",
+        "features": ["fallback_chain", "transparent_materiality", "sentence_level_evidence", "huggingface_inference"],
         "timestamp": datetime.now().isoformat()
     }
 
@@ -90,13 +86,11 @@ async def compare_earnings_calls(args: dict) -> dict:
             "user_action": f"Transcript for {ticker} Q{previous_quarter} {previous_year} is not available. Try a different ticker or quarter."
         }
     
-    # Analyze sentiment of both transcripts
-    current_sentiment = sentiment_client.analyze_sentiment(current.get('content', ''))
-    previous_sentiment = sentiment_client.analyze_sentiment(previous.get('content', ''))
-    
-    current_score = current_sentiment.get('sentiment_score', 0.5)
-    previous_score = previous_sentiment.get('sentiment_score', 0.5)
-    delta = current_score - previous_score
+    # Analyze sentiment with sentence-level evidence (transparent materiality)
+    comparison = sentiment_client.compare_with_evidence(
+        current.get('content', ''),
+        previous.get('content', '')
+    )
     
     return {
         "tool": "compare_earnings_calls",
@@ -115,24 +109,8 @@ async def compare_earnings_calls(args: dict) -> dict:
                 "status": previous['status']
             }
         },
-        "sentiment_analysis": {
-            "overall_delta": {
-                "current": current_score,
-                "previous": previous_score,
-                "delta": round(delta, 3),
-                "direction": "more confident" if delta > 0.05 else ("less confident" if delta < -0.05 else "unchanged"),
-                "materiality": "high" if abs(delta) > 0.15 else ("moderate" if abs(delta) > 0.08 else "low")
-            },
-            "current_sentiment": current_sentiment,
-            "previous_sentiment": previous_sentiment,
-            "methodology": {
-                "model": "distilbert-base-uncased-finetuned-sst-2-english",
-                "api": "HuggingFace Inference (free)",
-                "sentiment_scale": "0=negative/cautious, 0.5=neutral, 1=positive/confident",
-                "transparency": "All sentiment scores are backed by the Hugging Face inference API"
-            }
-        },
-        "transparency_note": "All sentiment claims are generated using the Hugging Face inference API with the distilbert-base-uncased-finetuned-sst-2-english model.",
+        "sentiment_analysis": comparison,
+        "transparency_note": "All sentiment claims are backed by exact sentence-level evidence. See current_evidence and previous_evidence arrays for exact sentences, their sentiment scores, and confidence levels. Each sentence was analyzed individually using the Hugging Face inference API.",
         "query_timestamp": datetime.now().isoformat()
     }
 
@@ -146,14 +124,15 @@ async def analyze_sentiment(args: dict) -> dict:
             "user_action": "Provide an earnings call transcript excerpt or full text"
         }
     
-    result = sentiment_client.analyze_sentiment(text)
+    # Use sentence-level evidence for single transcript analysis
+    result = sentiment_client.analyze_sentiment_with_evidence(text)
     
     return {
         "tool": "analyze_sentiment",
         "analysis": result,
         "text_preview": text[:200] + "..." if len(text) > 200 else text,
         "query_timestamp": datetime.now().isoformat(),
-        "transparency_note": "Sentiment analysis performed using Hugging Face inference API."
+        "transparency_note": "Sentiment analysis performed using Hugging Face inference API with sentence-level evidence. Each sentence in the evidence array shows its individual sentiment score."
     }
 
 
@@ -162,4 +141,5 @@ if __name__ == "__main__":
     print(f"Starting CallDelta MCP Server on port {port}")
     print(f"Health check: http://0.0.0.0:{port}/health")
     print("Using Hugging Face Inference API for sentiment (no local ML models)")
+    print("Transparent materiality enabled: sentence-level evidence provided for every claim")
     uvicorn.run(app, host="0.0.0.0", port=port)
