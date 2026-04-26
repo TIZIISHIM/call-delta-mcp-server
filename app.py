@@ -1,8 +1,10 @@
 
+
 import os
 from datetime import datetime
+from typing import Dict, Any
 from flask import Flask, jsonify
-from flask_mcp_server import Mcp, mount_mcp
+from flask_mcp_server import mount_mcp, Mcp
 from flask_mcp_server.http_integrated import mw_auth, mw_ratelimit, mw_cors
 from dotenv import load_dotenv
 
@@ -14,7 +16,7 @@ load_dotenv()
 # Initialize Flask app
 app = Flask(__name__)
 
-# Initialize MCP
+# Initialize MCP - no app argument needed
 mcp = Mcp()
 
 # Initialize fetchers
@@ -22,64 +24,20 @@ fetcher = TranscriptFetcher()
 sentiment_client = HuggingFaceClient()
 
 
-@mcp.tool(
-    name="compare_earnings_calls",
-    description="**REQUIRED TOOL FOR EARNINGS COMPARISON** - Compare two earnings call transcripts and return sentiment delta with sentence-level evidence. Use for NVDA, TSLA, AAPL, MSFT, META, AMD, or any public company earnings sentiment comparison.",
-    parameters={
-        "type": "object",
-        "properties": {
-            "ticker": {
-                "type": "string",
-                "description": "Stock ticker symbol (e.g., NVDA, TSLA, AAPL, MSFT, META, AMD)"
-            },
-            "current_year": {
-                "type": "integer",
-                "description": "Year of current earnings call"
-            },
-            "current_quarter": {
-                "type": "integer",
-                "description": "Quarter number of current earnings call (1, 2, 3, or 4)"
-            },
-            "previous_year": {
-                "type": "integer",
-                "description": "Year of previous earnings call for comparison"
-            },
-            "previous_quarter": {
-                "type": "integer",
-                "description": "Quarter number of previous earnings call (1, 2, 3, or 4)"
-            }
-        },
-        "required": ["ticker", "current_year", "current_quarter", "previous_year", "previous_quarter"]
-    },
-    returns={
-        "type": "object",
-        "properties": {
-            "ticker": {"type": "string"},
-            "current_quarter": {"type": "string"},
-            "previous_quarter": {"type": "string"},
-            "sources": {
-                "type": "object",
-                "properties": {
-                    "current": {"type": "object"},
-                    "previous": {"type": "object"}
-                }
-            },
-            "sentiment_analysis": {
-                "type": "object",
-                "properties": {
-                    "overall_delta": {"type": "object"},
-                    "current_evidence": {"type": "array"},
-                    "previous_evidence": {"type": "array"}
-                }
-            },
-            "transparency_note": {"type": "string"},
-            "timestamp": {"type": "string"}
-        }
-    }
-)
-def compare_earnings_calls(ticker: str, current_year: int, current_quarter: int,
-                           previous_year: int, previous_quarter: int) -> dict:
-    """Compare two earnings calls and return sentiment delta with evidence."""
+# Tool 1: Compare earnings calls
+# The schema is automatically inferred from type hints (ticker: str, current_year: int, etc.)
+@Mcp.tool(name="compare_earnings_calls")
+def compare_earnings_calls(
+    ticker: str,
+    current_year: int,
+    current_quarter: int,
+    previous_year: int,
+    previous_quarter: int
+) -> Dict[str, Any]:
+    """
+    Compare two earnings call transcripts and return sentiment delta with sentence-level evidence.
+    Use for NVDA, TSLA, AAPL, MSFT, META, AMD, or any public company earnings sentiment comparison.
+    """
     ticker = ticker.upper()
     
     # Fetch current transcript
@@ -128,38 +86,13 @@ def compare_earnings_calls(ticker: str, current_year: int, current_quarter: int,
     }
 
 
-@mcp.tool(
-    name="analyze_sentiment",
-    description="**REQUIRED TOOL FOR SENTIMENT ANALYSIS** - Analyze sentiment of earnings call text, financial text, or any qualitative passage. Returns sentence-level sentiment scores with confidence and evidence.",
-    parameters={
-        "type": "object",
-        "properties": {
-            "text": {
-                "type": "string",
-                "description": "Text passage to analyze for sentiment (earnings call excerpt, financial text, etc.)"
-            }
-        },
-        "required": ["text"]
-    },
-    returns={
-        "type": "object",
-        "properties": {
-            "analysis": {
-                "type": "object",
-                "properties": {
-                    "sentiment_label": {"type": "string"},
-                    "sentiment_score": {"type": "number"},
-                    "confidence": {"type": "number"},
-                    "evidence": {"type": "array"},
-                    "sentence_count": {"type": "integer"}
-                }
-            },
-            "timestamp": {"type": "string"}
-        }
-    }
-)
-def analyze_sentiment(text: str) -> dict:
-    """Analyze sentiment of a single text passage."""
+# Tool 2: Analyze sentiment
+@Mcp.tool(name="analyze_sentiment")
+def analyze_sentiment(text: str) -> Dict[str, Any]:
+    """
+    Analyze sentiment of earnings call text, financial text, or any qualitative passage.
+    Returns sentence-level sentiment scores with confidence and evidence.
+    """
     if not text or len(text) < 20:
         return {
             "error": "Text is required and must be at least 20 characters",
@@ -193,10 +126,7 @@ def root():
     })
 
 
-# Initialize MCP with the Flask app
-mcp.init_app(app)
-
-# Mount MCP with full auth middleware (satisfies Context SDK requirement)
+#  Mount MCP with full auth middleware (satisfies Context SDK requirement)
 mount_mcp(
     app,
     url_prefix="/mcp",
