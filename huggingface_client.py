@@ -15,7 +15,6 @@ class HuggingFaceClient:
     
     def analyze_sentiment_with_evidence(self, text: str, max_sentences: int = 10) -> Dict:
         """Analyze sentiment with sentence-level evidence - returns REAL scores."""
-        # Split into sentences
         sentences = self._split_sentences(text)
         sentences = [s.strip() for s in sentences if len(s.strip()) > 30][:max_sentences]
         
@@ -31,20 +30,14 @@ class HuggingFaceClient:
                 'note': 'No substantial sentences found for analysis'
             }
         
-        # Analyze each sentence
         sentence_results = []
         for sentence in sentences:
             result = self._analyze_single_sentence(sentence)
             sentence_results.append(result)
         
-        # Calculate overall sentiment from individual sentences
         scores = [r['sentiment_score'] for r in sentence_results if r.get('sentiment_score') is not None]
-        if scores:
-            overall_score = sum(scores) / len(scores)
-        else:
-            overall_score = 0.5
+        overall_score = sum(scores) / len(scores) if scores else 0.5
         
-        # Determine overall label
         if overall_score > 0.6:
             overall_label = 'positive'
         elif overall_score < 0.4:
@@ -83,15 +76,12 @@ class HuggingFaceClient:
             if response.status_code == 200:
                 result = response.json()
                 
-                # Parse the Hugging Face response format
-                # Expected format: [{'label': 'POSITIVE', 'score': 0.95}]
                 if isinstance(result, list) and len(result) > 0:
                     first_result = result[0]
                     if isinstance(first_result, dict) and 'label' in first_result:
                         label = first_result['label']
                         score = first_result['score']
                         
-                        # Convert to 0-1 scale (0=negative, 1=positive)
                         if label == 'POSITIVE':
                             sentiment_score = score
                             sentiment_label = 'positive'
@@ -110,7 +100,6 @@ class HuggingFaceClient:
                             'raw_model_output': label
                         }
                 
-                # If we get here, response format was unexpected
                 return {
                     'sentence': sentence[:200],
                     'sentiment_label': 'neutral',
@@ -127,7 +116,6 @@ class HuggingFaceClient:
                     'confidence': 0.5,
                     'error': 'Rate limited - using fallback'
                 }
-            
             else:
                 return {
                     'sentence': sentence[:200],
@@ -163,7 +151,6 @@ class HuggingFaceClient:
         previous_score = previous_analysis['sentiment_score']
         delta = current_score - previous_score
         
-        # Determine direction and materiality
         if delta > 0.05:
             direction = 'more confident'
         elif delta < -0.05:
@@ -178,7 +165,6 @@ class HuggingFaceClient:
         else:
             materiality = 'low'
         
-        # Find the most changed sentence (if available)
         most_changed = None
         current_evidence = current_analysis.get('evidence', [])
         previous_evidence = previous_analysis.get('evidence', [])
@@ -212,7 +198,6 @@ class HuggingFaceClient:
                 'model': 'distilbert-base-uncased-finetuned-sst-2-english',
                 'api': 'HuggingFace Inference (free)',
                 'transparency': 'Each sentence analyzed individually with source evidence',
-                'sentiment_scale': '0=negative/cautious, 0.5=neutral, 1=positive/confident',
-                'evidence_sources': 'Each evidence item includes the exact sentence that drove the score'
+                'sentiment_scale': '0=negative/cautious, 0.5=neutral, 1=positive/confident'
             }
         }
