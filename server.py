@@ -2,9 +2,8 @@
 
 import os
 import json
-import jwt
 from datetime import datetime
-from fastapi import FastAPI, Request, Response, HTTPException, Depends
+from fastapi import FastAPI, Request, Response, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.responses import JSONResponse
 import uvicorn
@@ -21,30 +20,19 @@ sentiment_client = HuggingFaceClient()
 
 PROTOCOL_VERSION = "2024-11-05"
 
-# Auth setup for Context Protocol
+# Auth setup for Context Protocol (optional for free tier)
 security = HTTPBearer(auto_error=False)
-
-# Get Context public key for JWT verification (from well-known endpoint)
-CONTEXT_JWKS_URL = "https://www.ctxprotocol.com/.well-known/jwks.json"
 
 
 def verify_context_auth(credentials: HTTPAuthorizationCredentials = Depends(security)):
     """
-    Verify Context Protocol JWT for paid tools.
-    For free tools ($0), this is optional but included for future-proofing.
+    Verify Context Protocol authentication.
+    For free tools ($0), this is optional and always passes.
+    For paid tools, implement proper JWT verification.
     """
-    # If price is $0, we can skip verification
-    # For paid tools, uncomment the verification logic
-    
-    # If no credentials provided and tool is free, allow access
-    if not credentials:
-        return {"authenticated": False, "reason": "no_credentials"}
-    
-    token = credentials.credentials
-    
-    # For now, accept all tokens (free tier)
-    # When ready to charge, implement real JWT verification
-    return {"authenticated": True, "token": token[:20] + "..."}
+    # Free tier - accept all requests
+    # When ready to charge, implement proper verification using Context's public key
+    return {"authenticated": True, "tier": "free"}
 
 
 @app.get("/")
