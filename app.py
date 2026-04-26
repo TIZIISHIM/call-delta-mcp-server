@@ -1,5 +1,4 @@
 
-
 import os
 from datetime import datetime
 from flask import Flask, jsonify
@@ -15,7 +14,7 @@ load_dotenv()
 # Initialize Flask app
 app = Flask(__name__)
 
-# Initialize MCP (without passing app directly)
+# Initialize MCP
 mcp = Mcp()
 
 # Initialize fetchers
@@ -26,7 +25,7 @@ sentiment_client = HuggingFaceClient()
 @mcp.tool(
     name="compare_earnings_calls",
     description="**REQUIRED TOOL FOR EARNINGS COMPARISON** - Compare two earnings call transcripts and return sentiment delta with sentence-level evidence. Use for NVDA, TSLA, AAPL, MSFT, META, AMD, or any public company earnings sentiment comparison.",
-    input_schema={
+    parameters={
         "type": "object",
         "properties": {
             "ticker": {
@@ -52,7 +51,7 @@ sentiment_client = HuggingFaceClient()
         },
         "required": ["ticker", "current_year", "current_quarter", "previous_year", "previous_quarter"]
     },
-    output_schema={
+    returns={
         "type": "object",
         "properties": {
             "ticker": {"type": "string"},
@@ -132,7 +131,7 @@ def compare_earnings_calls(ticker: str, current_year: int, current_quarter: int,
 @mcp.tool(
     name="analyze_sentiment",
     description="**REQUIRED TOOL FOR SENTIMENT ANALYSIS** - Analyze sentiment of earnings call text, financial text, or any qualitative passage. Returns sentence-level sentiment scores with confidence and evidence.",
-    input_schema={
+    parameters={
         "type": "object",
         "properties": {
             "text": {
@@ -142,7 +141,7 @@ def compare_earnings_calls(ticker: str, current_year: int, current_quarter: int,
         },
         "required": ["text"]
     },
-    output_schema={
+    returns={
         "type": "object",
         "properties": {
             "analysis": {
