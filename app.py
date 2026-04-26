@@ -3,7 +3,7 @@
 import os
 import json
 from datetime import datetime
-from flask import Flask, request, jsonify
+from flask import Flask, jsonify
 from flask_mcp_server import mount_mcp, Mcp
 from flask_mcp_server.http_integrated import mw_auth, mw_ratelimit, mw_cors
 from dotenv import load_dotenv
@@ -196,6 +196,7 @@ def root():
 
 
 # Mount MCP with full auth middleware (satisfies Context SDK requirement)
+# IMPORTANT: This MUST be done before running the app
 mount_mcp(
     app,
     url_prefix="/mcp",
@@ -204,9 +205,13 @@ mount_mcp(
 
 
 if __name__ == "__main__":
+    # CRITICAL: Use PORT from environment, bind to 0.0.0.0
+    # Railway requires both of these [citation:1]
     port = int(os.environ.get("PORT", 8080))
     print(f"Starting CallDelta MCP Server on port {port}")
     print(f"MCP endpoint: http://0.0.0.0:{port}/mcp")
     print(f"Health check: http://0.0.0.0:{port}/health")
     print("Features: real transcript extraction, IR fallback, real sentiment scores, Context auth middleware")
-    app.run(host="0.0.0.0", port=port, debug=False)
+    
+    # Run the app - this will keep the server alive
+    app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
