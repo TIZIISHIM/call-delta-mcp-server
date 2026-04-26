@@ -16,5 +16,4 @@ ENV PYTHONUNBUFFERED=1
 
 EXPOSE 8080
 
-# This now runs app.py instead of server.py
 CMD ["python", "-u", "app.py"]
