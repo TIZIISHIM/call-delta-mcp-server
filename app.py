@@ -1,4 +1,3 @@
-
 import os
 import json
 import asyncio
@@ -10,6 +9,7 @@ import uvicorn
 
 from transcript_fetcher import TranscriptFetcher
 from huggingface_client import HuggingFaceClient
+from ctxprotocol import verify_context_request
 
 # Initialize FastAPI app
 app = FastAPI(title="CallDelta MCP Server")
@@ -21,7 +21,7 @@ sentiment_client = HuggingFaceClient()
 # Store active sessions
 sessions = {}
 
-# Define tools
+# Define tools with outputSchema and _meta
 AVAILABLE_TOOLS = [
     {
         "name": "compare_earnings_calls",
@@ -132,7 +132,7 @@ async def messages_endpoint(request: Request):
     
     print(f"Received on /messages: {method} (id: {msg_id}, session: {session_id})")
     
-    # Initialize handshake
+    # Initialize handshake (no auth required)
     if method == "initialize":
         return JSONResponse(content={
             "jsonrpc": "2.0",
@@ -144,11 +144,11 @@ async def messages_endpoint(request: Request):
             }
         })
     
-    # Initialized notification
+    # Initialized notification (no auth required)
     elif method == "notifications/initialized":
         return Response(status_code=202)
     
-    # List tools
+    # List tools (no auth required - open discovery)
     elif method == "tools/list":
         return JSONResponse(content={
             "jsonrpc": "2.0",
@@ -156,8 +156,27 @@ async def messages_endpoint(request: Request):
             "result": {"tools": AVAILABLE_TOOLS}
         })
     
-    # Call tool
+    # Call tool (REQUIRES AUTH)
     elif method == "tools/call":
+        # Verify Context auth
+        auth_header = request.headers.get("authorization", "")
+        try:
+            payload = await verify_context_request(
+                authorization_header=auth_header,
+                audience="https://calldelta-mcp-server.up.railway.app"  # Replace with your actual Railway URL
+            )
+            print(f"Auth successful for tool call: {payload.get('sub', 'unknown')}")
+        except Exception as auth_error:
+            print(f"Auth failed: {str(auth_error)}")
+            return JSONResponse(
+                status_code=401,
+                content={
+                    "jsonrpc": "2.0",
+                    "id": msg_id,
+                    "error": {"code": -32000, "message": f"Unauthorized: {str(auth_error)}"}
+                }
+            )
+        
         tool_name = params.get("name", "")
         arguments = params.get("arguments", {})
         
@@ -190,7 +209,7 @@ async def messages_endpoint(request: Request):
 # FALLBACK: Handle requests to /mcp (where Context sometimes sends them)
 @app.post("/mcp")
 async def mcp_fallback(request: Request):
-    """Fallback for /mcp requests - redirect to same logic as /messages."""
+    """Fallback for /mcp requests - same logic as /messages."""
     try:
         body = await request.json()
     except Exception as e:
@@ -227,6 +246,25 @@ async def mcp_fallback(request: Request):
         })
     
     elif method == "tools/call":
+        # Verify Context auth
+        auth_header = request.headers.get("authorization", "")
+        try:
+            payload = await verify_context_request(
+                authorization_header=auth_header,
+                audience="https://calldelta-mcp-server.up.railway.app"  # Replace with your actual Railway URL
+            )
+            print(f"Auth successful for tool call: {payload.get('sub', 'unknown')}")
+        except Exception as auth_error:
+            print(f"Auth failed: {str(auth_error)}")
+            return JSONResponse(
+                status_code=401,
+                content={
+                    "jsonrpc": "2.0",
+                    "id": msg_id,
+                    "error": {"code": -32000, "message": f"Unauthorized: {str(auth_error)}"}
+                }
+            )
+        
         tool_name = params.get("name", "")
         arguments = params.get("arguments", {})
         
@@ -295,7 +333,7 @@ async def compare_earnings_calls(args: dict) -> dict:
             "previous": {"source": previous.get('source_used', 'Unknown')}
         },
         "sentiment_analysis": comparison,
-        "transparency_note": "All claims backed by sentence-level evidence.",
+        "transparency_note": "All claims backed by sentence-level evidence from actual transcript excerpts.",
         "timestamp": datetime.now().isoformat()
     }
 
@@ -309,7 +347,7 @@ async def analyze_sentiment(args: dict) -> dict:
     result = sentiment_client.analyze_sentiment_with_evidence(text)
     return {
         "analysis": result,
-        "transparency_note": "Sentence-level evidence provided.",
+        "transparency_note": "Sentence-level evidence provided from actual text analysis.",
         "timestamp": datetime.now().isoformat()
     }
 
