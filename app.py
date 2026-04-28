@@ -21,11 +21,11 @@ verify_context = create_context_middleware(
     audience="https://calldelta-mcp-server-production.up.railway.app"
 )
 
-# Define tools (plain Python dict, no mcp package needed)
+# Define tools
 TOOLS = [
     {
         "name": "compare_earnings_calls",
-        "description": "Compare two earnings call transcripts and return sentiment delta.",
+        "description": "Compare two earnings call transcripts and return sentiment delta with sentence-level evidence.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -43,14 +43,17 @@ TOOLS = [
                 "ticker": {"type": "string"},
                 "current_quarter": {"type": "string"},
                 "previous_quarter": {"type": "string"},
+                "sources": {"type": "object"},
                 "sentiment_analysis": {"type": "object"},
+                "transparency_note": {"type": "string"},
                 "timestamp": {"type": "string"}
             }
-        }
+        },
+        "_meta": {"surface": "query", "queryEligible": True}
     },
     {
         "name": "analyze_sentiment",
-        "description": "Analyze sentiment of earnings call text.",
+        "description": "Analyze sentiment of earnings call text with sentence-level evidence.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -62,104 +65,132 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "analysis": {"type": "object"},
+                "transparency_note": {"type": "string"},
                 "timestamp": {"type": "string"}
             }
-        }
+        },
+        "_meta": {"surface": "query", "queryEligible": True}
     }
 ]
 
 
 @app.get("/health")
 async def health():
-    return {"status": "alive"}
+    return {"status": "alive", "timestamp": datetime.now().isoformat()}
 
 
-@app.post("/mcp")
-async def mcp_endpoint(request: Request, context: dict = Depends(verify_context)):
-    """Handle MCP JSON-RPC requests."""
-    try:
-        body = await request.json()
-    except:
-        return JSONResponse(status_code=400, content={"error": "Invalid JSON"})
+@app.api_route("/", methods=["GET", "POST"])
+async def root(request: Request, context: dict = Depends(verify_context)):
+    """Handle both GET (SSE connection) and POST (JSON-RPC) at the root endpoint."""
     
-    method = body.get("method")
-    msg_id = body.get("id")
-    params = body.get("params", {})
-    
-    print(f"Method: {method}, ID: {msg_id}")
-    
-    # initialize
-    if method == "initialize":
-        return {
-            "jsonrpc": "2.0",
-            "id": msg_id,
-            "result": {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {"tools": {}},
-                "serverInfo": {"name": "calldelta", "version": "1.0.0"}
+    if request.method == "GET":
+        # SSE connection - keep alive
+        return Response(
+            content="event: endpoint\ndata: /\n\n",
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "Access-Control-Allow-Origin": "*"
             }
-        }
+        )
     
-    # initialized notification
-    if method == "notifications/initialized":
-        return Response(status_code=202)
-    
-    # tools/list
-    if method == "tools/list":
-        return {
-            "jsonrpc": "2.0",
-            "id": msg_id,
-            "result": {"tools": TOOLS}
-        }
-    
-    # tools/call
-    if method == "tools/call":
-        tool_name = params.get("name")
-        args = params.get("arguments", {})
+    elif request.method == "POST":
+        try:
+            body = await request.json()
+        except:
+            return JSONResponse(status_code=400, content={"error": "Invalid JSON"})
         
-        if tool_name == "compare_earnings_calls":
-            result = await compare_earnings_calls(args)
-        elif tool_name == "analyze_sentiment":
-            result = await analyze_sentiment(args)
-        else:
+        method = body.get("method")
+        msg_id = body.get("id")
+        params = body.get("params", {})
+        
+        print(f"Method: {method}, ID: {msg_id}")
+        
+        if method == "initialize":
             return {
                 "jsonrpc": "2.0",
                 "id": msg_id,
-                "error": {"code": -32601, "message": f"Tool not found: {tool_name}"}
+                "result": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {"tools": {}},
+                    "serverInfo": {"name": "calldelta", "version": "1.0.0"}
+                }
+            }
+        
+        if method == "notifications/initialized":
+            return Response(status_code=202)
+        
+        if method == "tools/list":
+            return {
+                "jsonrpc": "2.0",
+                "id": msg_id,
+                "result": {"tools": TOOLS}
+            }
+        
+        if method == "tools/call":
+            tool_name = params.get("name")
+            args = params.get("arguments", {})
+            
+            if tool_name == "compare_earnings_calls":
+                result = await compare_earnings_calls(args)
+            elif tool_name == "analyze_sentiment":
+                result = await analyze_sentiment(args)
+            else:
+                return {
+                    "jsonrpc": "2.0",
+                    "id": msg_id,
+                    "error": {"code": -32601, "message": f"Tool not found: {tool_name}"}
+                }
+            
+            return {
+                "jsonrpc": "2.0",
+                "id": msg_id,
+                "result": {
+                    "content": [{"type": "text", "text": json.dumps(result, indent=2)}]
+                }
             }
         
         return {
             "jsonrpc": "2.0",
             "id": msg_id,
-            "result": {
-                "content": [{"type": "text", "text": json.dumps(result)}]
-            }
+            "error": {"code": -32601, "message": f"Method not found: {method}"}
         }
-    
-    return {
-        "jsonrpc": "2.0",
-        "id": msg_id,
-        "error": {"code": -32601, "message": f"Method not found: {method}"}
-    }
 
 
 async def compare_earnings_calls(args):
     ticker = args.get("ticker", "").upper()
-    current = fetcher.fetch_transcript(ticker, args.get("current_year"), args.get("current_quarter"))
-    previous = fetcher.fetch_transcript(ticker, args.get("previous_year"), args.get("previous_quarter"))
+    current_year = args.get("current_year")
+    current_quarter = args.get("current_quarter")
+    previous_year = args.get("previous_year")
+    previous_quarter = args.get("previous_quarter")
     
+    if not ticker:
+        return {"error": "Ticker is required"}
+    
+    current = fetcher.fetch_transcript(ticker, current_year, current_quarter)
     if current.get('status') == 'error':
-        return {"error": "Current transcript not found"}
-    if previous.get('status') == 'error':
-        return {"error": "Previous transcript not found"}
+        return {"error": f"Failed to fetch transcript for {ticker} Q{current_quarter} {current_year}"}
     
-    comparison = sentiment_client.compare_with_evidence(current.get('content', ''), previous.get('content', ''))
+    previous = fetcher.fetch_transcript(ticker, previous_year, previous_quarter)
+    if previous.get('status') == 'error':
+        return {"error": f"Failed to fetch transcript for {ticker} Q{previous_quarter} {previous_year}"}
+    
+    comparison = sentiment_client.compare_with_evidence(
+        current.get('content', ''),
+        previous.get('content', '')
+    )
     
     return {
         "ticker": ticker,
-        "current_quarter": f"Q{args.get('current_quarter')} {args.get('current_year')}",
-        "previous_quarter": f"Q{args.get('previous_quarter')} {args.get('previous_year')}",
+        "current_quarter": f"Q{current_quarter} {current_year}",
+        "previous_quarter": f"Q{previous_quarter} {previous_year}",
+        "sources": {
+            "current": {"source": current.get('source_used', 'Unknown')},
+            "previous": {"source": previous.get('source_used', 'Unknown')}
+        },
         "sentiment_analysis": comparison,
+        "transparency_note": "All claims backed by sentence-level evidence.",
         "timestamp": datetime.now().isoformat()
     }
 
@@ -167,13 +198,18 @@ async def compare_earnings_calls(args):
 async def analyze_sentiment(args):
     text = args.get("text", "")
     if len(text) < 20:
-        return {"error": "Text too short"}
+        return {"error": "Text must be at least 20 characters"}
+    
+    result = sentiment_client.analyze_sentiment_with_evidence(text)
     return {
-        "analysis": sentiment_client.analyze_sentiment_with_evidence(text),
+        "analysis": result,
+        "transparency_note": "Sentence-level evidence provided.",
         "timestamp": datetime.now().isoformat()
     }
 
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
+    print(f"Starting CallDelta MCP Server on port {port}")
+    print(f"Root endpoint: http://0.0.0.0:{port}/")
     uvicorn.run(app, host="0.0.0.0", port=port)
