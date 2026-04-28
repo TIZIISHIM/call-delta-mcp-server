@@ -1,15 +1,17 @@
 
+
 import os
-import asyncio
 import json
+import asyncio
 from datetime import datetime
 from mcp.server import Server
 from mcp.server.sse import SseServerTransport
 from mcp.types import Tool, TextContent
-import uvicorn
-from fastapi import FastAPI, Request
-from fastapi.responses import Response
+from starlette.applications import Starlette
 from starlette.routing import Route
+from starlette.requests import Request
+from starlette.responses import Response
+import uvicorn
 
 from transcript_fetcher import TranscriptFetcher
 from huggingface_client import HuggingFaceClient
@@ -19,12 +21,9 @@ fetcher = TranscriptFetcher()
 sentiment_client = HuggingFaceClient()
 
 # Create MCP server
-server = Server("calldelta-mcp-server")
+mcp_server = Server("calldelta-mcp-server")
 
-# Create FastAPI app
-app = FastAPI(title="CallDelta MCP Server")
-
-# Define tools with FULL outputSchema and _meta
+# Define tools with FULL outputSchema and _meta (meets Context requirements)
 TOOLS = [
     Tool(
         name="compare_earnings_calls",
@@ -32,7 +31,7 @@ TOOLS = [
         inputSchema={
             "type": "object",
             "properties": {
-                "ticker": {"type": "string", "description": "Stock ticker symbol"},
+                "ticker": {"type": "string", "description": "Stock ticker symbol (e.g., NVDA, TSLA, AAPL, MSFT, META, AMD)"},
                 "current_year": {"type": "integer", "description": "Year of current earnings call"},
                 "current_quarter": {"type": "integer", "description": "Quarter number (1-4)"},
                 "previous_year": {"type": "integer", "description": "Year of previous earnings call"},
@@ -46,8 +45,21 @@ TOOLS = [
                 "ticker": {"type": "string"},
                 "current_quarter": {"type": "string"},
                 "previous_quarter": {"type": "string"},
-                "sources": {"type": "object"},
-                "sentiment_analysis": {"type": "object"},
+                "sources": {
+                    "type": "object",
+                    "properties": {
+                        "current": {"type": "object"},
+                        "previous": {"type": "object"}
+                    }
+                },
+                "sentiment_analysis": {
+                    "type": "object",
+                    "properties": {
+                        "overall_delta": {"type": "object"},
+                        "current_evidence": {"type": "array"},
+                        "previous_evidence": {"type": "array"}
+                    }
+                },
                 "transparency_note": {"type": "string"},
                 "timestamp": {"type": "string"}
             }
@@ -63,14 +75,23 @@ TOOLS = [
         inputSchema={
             "type": "object",
             "properties": {
-                "text": {"type": "string", "description": "Text to analyze"}
+                "text": {"type": "string", "description": "Text to analyze for sentiment"}
             },
             "required": ["text"]
         },
         outputSchema={
             "type": "object",
             "properties": {
-                "analysis": {"type": "object"},
+                "analysis": {
+                    "type": "object",
+                    "properties": {
+                        "sentiment_label": {"type": "string"},
+                        "sentiment_score": {"type": "number"},
+                        "confidence": {"type": "number"},
+                        "evidence": {"type": "array"},
+                        "sentence_count": {"type": "integer"}
+                    }
+                },
                 "transparency_note": {"type": "string"},
                 "timestamp": {"type": "string"}
             }
@@ -83,13 +104,13 @@ TOOLS = [
 ]
 
 
-@server.list_tools()
+@mcp_server.list_tools()
 async def handle_list_tools():
     """Return the list of tools."""
     return TOOLS
 
 
-@server.call_tool()
+@mcp_server.call_tool()
 async def handle_call_tool(name: str, arguments: dict):
     """Handle tool execution."""
     
@@ -100,14 +121,28 @@ async def handle_call_tool(name: str, arguments: dict):
         previous_year = arguments.get("previous_year")
         previous_quarter = arguments.get("previous_quarter")
         
+        if not all([ticker, current_year, current_quarter, previous_year, previous_quarter]):
+            return [TextContent(type="text", text=json.dumps({"error": "Missing required arguments"}))]
+        
+        # Fetch current transcript
         current = fetcher.fetch_transcript(ticker, current_year, current_quarter)
         if current.get('status') == 'error':
-            return [TextContent(type="text", text=json.dumps({"error": "Failed to fetch current transcript", "details": current}))]
+            return [TextContent(type="text", text=json.dumps({
+                "error": "Failed to fetch current transcript",
+                "details": current,
+                "suggestion": "Try a different ticker or quarter. Example: NVDA Q3 2024"
+            }))]
         
+        # Fetch previous transcript
         previous = fetcher.fetch_transcript(ticker, previous_year, previous_quarter)
         if previous.get('status') == 'error':
-            return [TextContent(type="text", text=json.dumps({"error": "Failed to fetch previous transcript", "details": previous}))]
+            return [TextContent(type="text", text=json.dumps({
+                "error": "Failed to fetch previous transcript",
+                "details": previous,
+                "suggestion": "Try a different ticker or quarter. Example: NVDA Q2 2024"
+            }))]
         
+        # Compare sentiment
         comparison = sentiment_client.compare_with_evidence(
             current.get('content', ''),
             previous.get('content', '')
@@ -122,7 +157,7 @@ async def handle_call_tool(name: str, arguments: dict):
                 "previous": {"source": previous.get('source_used', 'Unknown')}
             },
             "sentiment_analysis": comparison,
-            "transparency_note": "All claims backed by sentence-level evidence.",
+            "transparency_note": "All sentiment claims are backed by exact sentence-level evidence.",
             "timestamp": datetime.now().isoformat()
         }
         
@@ -130,13 +165,16 @@ async def handle_call_tool(name: str, arguments: dict):
     
     elif name == "analyze_sentiment":
         text = arguments.get("text", "")
-        if len(text) < 20:
-            return [TextContent(type="text", text=json.dumps({"error": "Text must be at least 20 characters"}))]
+        if not text or len(text) < 20:
+            return [TextContent(type="text", text=json.dumps({
+                "error": "Text must be at least 20 characters",
+                "suggestion": "Provide an earnings call transcript excerpt or financial text to analyze"
+            }))]
         
         result = sentiment_client.analyze_sentiment_with_evidence(text)
         output = {
             "analysis": result,
-            "transparency_note": "Sentence-level evidence provided.",
+            "transparency_note": "Sentence-level evidence provided for each claim.",
             "timestamp": datetime.now().isoformat()
         }
         return [TextContent(type="text", text=json.dumps(output, indent=2))]
@@ -149,44 +187,63 @@ async def handle_call_tool(name: str, arguments: dict):
 sse = SseServerTransport("/messages")
 
 
-@app.get("/sse")
+# Starlette app for better SSE handling
 async def handle_sse(request: Request):
     """SSE endpoint for MCP."""
     async with sse.connect_sse(
         request.scope, request.receive, request._send
     ) as streams:
-        await server.run(
-            streams[0], streams[1], server.create_initialization_options()
+        await mcp_server.run(
+            streams[0], streams[1], mcp_server.create_initialization_options()
         )
     return Response()
 
 
-@app.post("/messages")
 async def handle_messages(request: Request):
-    """Messages endpoint for MCP."""
-    await sse.handle_post_message(request)
+    """Messages endpoint for MCP - receives POST requests."""
+    await sse.handle_post_message(request.scope, request.receive, request._send)
     return Response()
 
 
-@app.get("/health")
-async def health():
-    return {"status": "alive", "timestamp": datetime.now().isoformat()}
+async def health(request: Request):
+    """Health check endpoint."""
+    return Response(
+        json.dumps({"status": "alive", "timestamp": datetime.now().isoformat()}),
+        media_type="application/json"
+    )
 
 
-@app.get("/")
-async def root():
-    return {
-        "status": "healthy",
-        "service": "CallDelta MCP Server",
-        "version": "7.0.0",
-        "features": ["sse_transport", "outputSchema", "_meta", "fmp_api"],
-        "timestamp": datetime.now().isoformat()
-    }
+async def root(request: Request):
+    """Root endpoint."""
+    return Response(
+        json.dumps({
+            "status": "healthy",
+            "service": "CallDelta MCP Server",
+            "version": "7.0.0",
+            "features": ["sse_transport", "outputSchema", "_meta", "fmp_api_ready"],
+            "timestamp": datetime.now().isoformat()
+        }),
+        media_type="application/json"
+    )
+
+
+# Create Starlette app
+app = Starlette(
+    debug=False,
+    routes=[
+        Route("/", root),
+        Route("/health", health),
+        Route("/sse", handle_sse),
+        Route("/messages", handle_messages, methods=["POST"]),
+    ]
+)
 
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     print(f"Starting CallDelta MCP Server on port {port}")
     print(f"SSE endpoint: http://0.0.0.0:{port}/sse")
+    print(f"Messages endpoint: http://0.0.0.0:{port}/messages")
     print(f"Health check: http://0.0.0.0:{port}/health")
+    print("Features: SSE transport, outputSchema, _meta, FMP API ready")
     uvicorn.run(app, host="0.0.0.0", port=port)
