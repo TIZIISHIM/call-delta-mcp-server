@@ -1,12 +1,10 @@
-"""
-CallDelta MCP Server - Using fastmcp with ctxprotocol auth
-"""
+
 
 import os
 from datetime import datetime
 from fastmcp import FastMCP
-from ctxprotocol import create_context_middleware
-from fastapi import FastAPI, Depends
+from ctxprotocol import verify_context_request, is_protected_mcp_method
+from fastapi import Request
 import uvicorn
 
 from transcript_fetcher import TranscriptFetcher
@@ -16,7 +14,7 @@ from huggingface_client import HuggingFaceClient
 fetcher = TranscriptFetcher()
 sentiment_client = HuggingFaceClient()
 
-# Create FastMCP server
+# Create FastMCP server (includes built-in FastAPI)
 mcp = FastMCP("CallDelta MCP Server")
 
 # Define output schemas
@@ -29,6 +27,7 @@ COMPARE_OUTPUT_SCHEMA = {
         "sources": {"type": "object"},
         "sentiment_analysis": {"type": "object"},
         "transparency_note": {"type": "string"},
+        "error": {"type": "string"},
         "timestamp": {"type": "string"}
     }
 }
@@ -38,6 +37,7 @@ ANALYZE_OUTPUT_SCHEMA = {
     "properties": {
         "analysis": {"type": "object"},
         "transparency_note": {"type": "string"},
+        "error": {"type": "string"},
         "timestamp": {"type": "string"}
     }
 }
@@ -58,14 +58,25 @@ def compare_earnings_calls(
     """Compare two earnings calls."""
     ticker = ticker.upper()
     
+    # Fetch current transcript
     current = fetcher.fetch_transcript(ticker, current_year, current_quarter)
     if current.get('status') == 'error':
-        return {"error": f"Failed to fetch transcript for {ticker} Q{current_quarter} {current_year}", "details": current}
+        return {
+            "error": f"Failed to fetch transcript for {ticker} Q{current_quarter} {current_year}",
+            "details": current,
+            "timestamp": datetime.now().isoformat()
+        }
     
+    # Fetch previous transcript
     previous = fetcher.fetch_transcript(ticker, previous_year, previous_quarter)
     if previous.get('status') == 'error':
-        return {"error": f"Failed to fetch transcript for {ticker} Q{previous_quarter} {previous_year}", "details": previous}
+        return {
+            "error": f"Failed to fetch transcript for {ticker} Q{previous_quarter} {previous_year}",
+            "details": previous,
+            "timestamp": datetime.now().isoformat()
+        }
     
+    # Compare sentiment
     comparison = sentiment_client.compare_with_evidence(
         current.get('content', ''),
         previous.get('content', '')
@@ -93,7 +104,10 @@ def compare_earnings_calls(
 def analyze_sentiment(text: str) -> dict:
     """Analyze sentiment of a single text."""
     if len(text) < 20:
-        return {"error": "Text must be at least 20 characters"}
+        return {
+            "error": "Text must be at least 20 characters",
+            "timestamp": datetime.now().isoformat()
+        }
     
     result = sentiment_client.analyze_sentiment_with_evidence(text)
     return {
@@ -103,15 +117,30 @@ def analyze_sentiment(text: str) -> dict:
     }
 
 
-# Add health check
+# Add health check route
 @mcp.get("/health")
 async def health():
     return {"status": "alive", "timestamp": datetime.now().isoformat()}
+
+
+# Add root route
+@mcp.get("/")
+async def root():
+    return {
+        "status": "healthy",
+        "service": "CallDelta MCP Server",
+        "version": "11.0.0",
+        "features": ["sse_transport", "output_schema", "fastmcp"],
+        "timestamp": datetime.now().isoformat()
+    }
 
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     print(f"Starting CallDelta MCP Server on port {port}")
     print(f"SSE endpoint: http://0.0.0.0:{port}/sse")
-    # fastmcp handles SSE automatically at /sse
+    print(f"Health check: http://0.0.0.0:{port}/health")
+    
+    # Run with SSE transport (fastmcp handles this)
+    # fastmcp automatically creates /sse endpoint
     mcp.run(transport="sse", host="0.0.0.0", port=port)
