@@ -1,12 +1,15 @@
 
-
 import os
 import asyncio
 import json
 from datetime import datetime
 from mcp.server import Server
-from mcp.server.stdio import stdio_server
+from mcp.server.sse import SseServerTransport
 from mcp.types import Tool, TextContent
+import uvicorn
+from fastapi import FastAPI, Request
+from fastapi.responses import Response
+from starlette.routing import Route
 
 from transcript_fetcher import TranscriptFetcher
 from huggingface_client import HuggingFaceClient
@@ -15,8 +18,11 @@ from huggingface_client import HuggingFaceClient
 fetcher = TranscriptFetcher()
 sentiment_client = HuggingFaceClient()
 
-# Create server
+# Create MCP server
 server = Server("calldelta-mcp-server")
+
+# Create FastAPI app
+app = FastAPI(title="CallDelta MCP Server")
 
 # Define tools with FULL outputSchema and _meta
 TOOLS = [
@@ -94,7 +100,6 @@ async def handle_call_tool(name: str, arguments: dict):
         previous_year = arguments.get("previous_year")
         previous_quarter = arguments.get("previous_quarter")
         
-        # Fetch transcripts
         current = fetcher.fetch_transcript(ticker, current_year, current_quarter)
         if current.get('status') == 'error':
             return [TextContent(type="text", text=json.dumps({"error": "Failed to fetch current transcript", "details": current}))]
@@ -103,7 +108,6 @@ async def handle_call_tool(name: str, arguments: dict):
         if previous.get('status') == 'error':
             return [TextContent(type="text", text=json.dumps({"error": "Failed to fetch previous transcript", "details": previous}))]
         
-        # Compare sentiment
         comparison = sentiment_client.compare_with_evidence(
             current.get('content', ''),
             previous.get('content', '')
@@ -141,11 +145,48 @@ async def handle_call_tool(name: str, arguments: dict):
         return [TextContent(type="text", text=json.dumps({"error": f"Unknown tool: {name}"}))]
 
 
-async def main():
-    """Run the server."""
-    async with stdio_server() as (read_stream, write_stream):
-        await server.run(read_stream, write_stream, server.create_initialization_options())
+# Create SSE transport
+sse = SseServerTransport("/messages")
+
+
+@app.get("/sse")
+async def handle_sse(request: Request):
+    """SSE endpoint for MCP."""
+    async with sse.connect_sse(
+        request.scope, request.receive, request._send
+    ) as streams:
+        await server.run(
+            streams[0], streams[1], server.create_initialization_options()
+        )
+    return Response()
+
+
+@app.post("/messages")
+async def handle_messages(request: Request):
+    """Messages endpoint for MCP."""
+    await sse.handle_post_message(request)
+    return Response()
+
+
+@app.get("/health")
+async def health():
+    return {"status": "alive", "timestamp": datetime.now().isoformat()}
+
+
+@app.get("/")
+async def root():
+    return {
+        "status": "healthy",
+        "service": "CallDelta MCP Server",
+        "version": "7.0.0",
+        "features": ["sse_transport", "outputSchema", "_meta", "fmp_api"],
+        "timestamp": datetime.now().isoformat()
+    }
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    port = int(os.environ.get("PORT", 8080))
+    print(f"Starting CallDelta MCP Server on port {port}")
+    print(f"SSE endpoint: http://0.0.0.0:{port}/sse")
+    print(f"Health check: http://0.0.0.0:{port}/health")
+    uvicorn.run(app, host="0.0.0.0", port=port)
