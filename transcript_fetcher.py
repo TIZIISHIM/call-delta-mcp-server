@@ -7,6 +7,7 @@ class TranscriptFetcher:
     def __init__(self):
         self.fmp_api_key = os.environ.get("FMP_API_KEY", "")
         self.apify_token = os.environ.get("APIFY_TOKEN", "")
+        self.apify_actor_id = "junipr/earnings-call-transcript-scraper"
         self.base_url = "https://financialmodelingprep.com/api/v3"
     
     def fetch_transcript(self, ticker: str, year: int, quarter: int) -> Dict:
@@ -15,23 +16,20 @@ class TranscriptFetcher:
         
         print(f"Fetching {ticker} {quarter_str} {year}")
         
-        # Try FMP first 
         if self.fmp_api_key:
             result = self._fetch_from_fmp(ticker, year, quarter_str)
             if result and result.get('status') == 'success':
                 return result
-        
         
         if self.apify_token:
             result = self._fetch_from_apify(ticker, year, quarter)
             if result and result.get('status') == 'success':
                 return result
         
-        # Both sources failed
         return {
             'status': 'error',
             'error_code': 'NO_SOURCE_AVAILABLE',
-            'error_message': f'No transcript source available for {ticker} {quarter_str} {year}. Set FMP_API_KEY or APIFY_TOKEN environment variable.',
+            'error_message': 'No transcript source available. Set FMP_API_KEY or APIFY_TOKEN environment variable.',
             'timestamp': datetime.now().isoformat()
         }
     
@@ -85,14 +83,19 @@ class TranscriptFetcher:
         
         try:
             print(f"Calling Apify for {ticker} {quarter_str} {year}")
-            run = client.actor("junipr/earnings-call-scraper").call(run_input=run_input)
+            run = client.actor(self.apify_actor_id).call(run_input=run_input)
             
             if run and run.get('status') == 'SUCCEEDED':
                 dataset_client = client.dataset(run.get('defaultDatasetId'))
                 items = list(dataset_client.iterate_items())
                 
                 if items and len(items) > 0:
-                    content = items[0].get('transcript', '') or items[0].get('content', '')
+                    content = items[0].get('transcript', '')
+                    if not content:
+                        content = items[0].get('content', '')
+                    if not content:
+                        content = items[0].get('text', '')
+                    
                     if content and len(content) > 200:
                         return {
                             'status': 'success',
@@ -101,6 +104,12 @@ class TranscriptFetcher:
                             'source_used': 'Apify Earnings Call Scraper',
                             'timestamp': datetime.now().isoformat()
                         }
+                    else:
+                        print(f"Apify returned short or empty content: {len(content) if content else 0} chars")
+                else:
+                    print("Apify returned no items in dataset")
+            else:
+                print(f"Apify run failed with status: {run.get('status') if run else 'no run'}")
         except Exception as e:
             print(f"Apify error: {str(e)}")
         
