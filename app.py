@@ -104,9 +104,12 @@ async def health():
 async def debug_env():
     """Debug endpoint to verify environment variables are being read."""
     fmp_key = os.environ.get("FMP_API_KEY", "")
+    apify_token = os.environ.get("APIFY_TOKEN", "")
     return {
         "fmp_key_set": bool(fmp_key),
         "fmp_key_preview": fmp_key[:5] + "..." if fmp_key else "not set",
+        "apify_token_set": bool(apify_token),
+        "apify_token_preview": apify_token[:10] + "..." if apify_token else "not set",
         "hf_token_set": bool(os.environ.get("HF_TOKEN", "")),
         "audience_url": os.environ.get("AUDIENCE_URL", "not set"),
     }
