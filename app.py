@@ -11,20 +11,15 @@ from transcript_fetcher import TranscriptFetcher
 from huggingface_client import HuggingFaceClient
 from ctxprotocol import verify_context_request
 
-# Initialize FastAPI app
 app = FastAPI(title="CallDelta MCP Server")
 
-# Initialize fetchers
 fetcher = TranscriptFetcher()
 sentiment_client = HuggingFaceClient()
 
-# Store active sessions
 sessions = {}
 
-# Get audience URL from environment variable
 AUDIENCE_URL = os.environ.get("AUDIENCE_URL", "https://calldelta-mcp-server-production.up.railway.app")
 
-# Define tools with execute mode enabled
 AVAILABLE_TOOLS = [
     {
         "name": "compare_earnings_calls",
@@ -53,8 +48,8 @@ AVAILABLE_TOOLS = [
             }
         },
         "_meta": {
-            "surface": "execute",
-            "queryEligible": False,
+            "surface": "both",
+            "queryEligible": True,
             "executeEligible": True
         }
     },
@@ -77,8 +72,8 @@ AVAILABLE_TOOLS = [
             }
         },
         "_meta": {
-            "surface": "execute",
-            "queryEligible": False,
+            "surface": "both",
+            "queryEligible": True,
             "executeEligible": True
         }
     }
