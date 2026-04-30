@@ -7,6 +7,7 @@ class TranscriptFetcher:
     def __init__(self):
         self.fmp_api_key = os.environ.get("FMP_API_KEY", "")
         self.apify_token = os.environ.get("APIFY_TOKEN", "")
+        self.finnhub_key = os.environ.get("FINNHUB_KEY", "")
         self.base_url = "https://financialmodelingprep.com/api/v3"
         
         # List of Apify actors to try in order
@@ -33,7 +34,13 @@ class TranscriptFetcher:
         if result and result.get('status') == 'success':
             return result
         
-        # Source 3: Apify (try multiple actors)
+        # Source 3: Finnhub
+        if self.finnhub_key:
+            result = self._fetch_from_finnhub(ticker, year, quarter)
+            if result and result.get('status') == 'success':
+                return result
+        
+        # Source 4: Apify actors
         if self.apify_token:
             for actor_id in self.apify_actors:
                 result = self._fetch_from_apify(ticker, year, quarter, actor_id)
@@ -45,7 +52,7 @@ class TranscriptFetcher:
             'status': 'error',
             'error_code': 'ALL_SOURCES_FAILED',
             'error_message': f'No transcript available for {ticker} {quarter_str} {year} from any source',
-            'sources_tried': ['FMP', 'YFinance', 'Apify'],
+            'sources_tried': ['FMP', 'YFinance', 'Finnhub', 'Apify'],
             'timestamp': datetime.now().isoformat()
         }
     
@@ -111,6 +118,49 @@ class TranscriptFetcher:
             return None
         except Exception as e:
             print(f"YFinance error: {str(e)}")
+            return None
+    
+    def _fetch_from_finnhub(self, ticker: str, year: int, quarter: int) -> Dict:
+        try:
+            # Calculate quarter months
+            start_month = (quarter - 1) * 3 + 1
+            end_month = quarter * 3
+            
+            url = "https://finnhub.io/api/v1/calendar/earnings"
+            params = {
+                'symbol': ticker,
+                'from': f"{year}-{start_month:02d}-01",
+                'to': f"{year}-{end_month:02d}-28",
+                'token': self.finnhub_key
+            }
+            
+            response = requests.get(url, params=params, timeout=15)
+            print(f"Finnhub response status: {response.status_code}")
+            
+            if response.status_code == 200:
+                data = response.json()
+                earnings_calls = data.get('earningsCalendar', [])
+                
+                for call in earnings_calls:
+                    transcript_url = call.get('transcriptUrl')
+                    if transcript_url:
+                        transcript_response = requests.get(transcript_url, timeout=15)
+                        if transcript_response.status_code == 200:
+                            content = transcript_response.text
+                            if len(content) > 500:
+                                return {
+                                    'status': 'success',
+                                    'source': 'Finnhub',
+                                    'content': content,
+                                    'source_used': 'Finnhub API',
+                                    'timestamp': datetime.now().isoformat()
+                                }
+            
+            print(f"Finnhub: No transcript found for {ticker}")
+            return None
+            
+        except Exception as e:
+            print(f"Finnhub error: {str(e)}")
             return None
     
     def _fetch_from_apify(self, ticker: str, year: int, quarter: int, actor_id: str) -> Dict:
