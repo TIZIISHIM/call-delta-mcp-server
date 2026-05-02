@@ -1,30 +1,39 @@
-import requests
 import os
 import re
 from typing import Dict, List
 
 class HuggingFaceClient:
     def __init__(self):
-        self.api_token = os.environ.get("HF_TOKEN", "")
-        self.headers = {"Authorization": f"Bearer {self.api_token}" if self.api_token else "", "Content-Type": "application/json"}
-        self.hf_api_failed = False
-        self.fallback_reason = None
-        
-        # List of FinBERT models to try in order
-        self.finbert_urls = [
-            "https://api-inference.huggingface.co/models/ProsusAI/finbert",
-            "https://api-inference.huggingface.co/models/finbert/finbert",
-            "https://api-inference.huggingface.co/models/yiyanghkust/finbert-tone",
-        ]
-        self.current_url_index = 0
-        
-        if not self.api_token:
-            print("WARNING: HF_TOKEN not set. Using rule-based fallback for sentiment analysis.")
-            self.hf_api_failed = True
-            self.fallback_reason = "HF_TOKEN not set in environment variables"
+        self.model = None
+        self.tokenizer = None
+        self.device = "cpu"
+        self.model_loaded = False
+        self.load_finbert()
+    
+    def load_finbert(self):
+        """Load FinBERT model locally - this is the free, self-hosted way"""
+        try:
+            from transformers import AutoTokenizer, AutoModelForSequenceClassification
+            import torch
+            
+            print("Loading FinBERT model locally...")
+            model_name = "ProsusAI/finbert"
+            
+            self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+            self.model = AutoModelForSequenceClassification.from_pretrained(model_name)
+            self.model.eval()
+            self.model_loaded = True
+            print("FinBERT model loaded successfully")
+            
+        except ImportError:
+            print("ERROR: transformers or torch not installed. Run: pip install transformers torch")
+            self.model_loaded = False
+        except Exception as e:
+            print(f"ERROR loading FinBERT: {str(e)}")
+            self.model_loaded = False
     
     def analyze_sentiment_with_evidence(self, text: str, max_sentences: int = 150) -> Dict:
-        # Split into sentences - threshold lowered to 15 chars
+        # Split into sentences
         sentences = re.split(r'(?<=[.!?])\s+', text)
         sentences = [s.strip() for s in sentences if len(s.strip()) > 15][:max_sentences]
         
@@ -35,20 +44,17 @@ class HuggingFaceClient:
                 'confidence': 0.0,
                 'evidence': [],
                 'sentence_count': 0,
-                'error': 'No valid sentences found in text (minimum 15 characters)'
+                'error': 'No valid sentences found'
             }
         
         # Process sentences
         sentence_results = []
-        batch_size = 20
         
-        for i in range(0, len(sentences), batch_size):
-            batch = sentences[i:i+batch_size]
-            for sentence in batch:
-                result = self._analyze_sentence(sentence)
-                sentence_results.append(result)
+        for sentence in sentences:
+            result = self._analyze_sentence(sentence)
+            sentence_results.append(result)
         
-        # Calculate overall sentiment from all analyzed sentences
+        # Calculate overall sentiment
         scores = [r['sentiment_score'] for r in sentence_results if r.get('sentiment_score') is not None]
         if scores:
             overall_score = sum(scores) / len(scores)
@@ -57,92 +63,63 @@ class HuggingFaceClient:
             
         label = 'positive' if overall_score > 0.55 else ('negative' if overall_score < 0.45 else 'neutral')
         
-        # Build response with error signal if HF API failed
-        response = {
+        return {
             'sentiment_label': label,
             'sentiment_score': round(overall_score, 3),
             'confidence': round(abs(overall_score - 0.5) * 2, 3),
             'evidence': sentence_results[:50],
             'sentence_count': len(sentence_results)
         }
-        
-        # Add error signal if fallback was used
-        if self.hf_api_failed:
-            response['warning'] = f"Sentiment analysis using rule-based fallback. Reason: {self.fallback_reason}. For full FinBERT accuracy, set HF_TOKEN environment variable."
-        
-        return response
     
     def _analyze_sentence(self, sentence: str) -> Dict:
-        # If HF API already failed or token missing, use fallback immediately
-        if self.hf_api_failed:
+        if not self.model_loaded:
             return self._fallback_sentiment(sentence)
         
-        # Try current FinBERT URL, if fails try next ones
-        for i in range(self.current_url_index, len(self.finbert_urls)):
-            url = self.finbert_urls[i]
-            result = self._call_finbert_api(url, sentence)
-            if result:
-                self.current_url_index = i
-                return result
-        
-        # All URLs failed, switch to fallback
-        print(f"All FinBERT URLs failed. Falling back to rule-based sentiment.")
-        self.hf_api_failed = True
-        self.fallback_reason = "All FinBERT API endpoints returned errors"
-        return self._fallback_sentiment(sentence)
-    
-    def _call_finbert_api(self, api_url: str, sentence: str) -> Dict:
-        truncated_sentence = sentence[:500]
-        
         try:
-            response = requests.post(api_url, headers=self.headers, json={"inputs": truncated_sentence}, timeout=30)
+            import torch
             
-            if response.status_code == 200:
-                result = response.json()
-                if result and len(result) > 0:
-                    label = result[0]['label'].lower()
-                    score = result[0]['score']
-                    
-                    if label == 'positive':
-                        sentiment_score = score
-                    elif label == 'negative':
-                        sentiment_score = 1 - score
-                    else:
-                        sentiment_score = 0.5
-                    
-                    print(f"FinBERT API ({api_url}) returned {label} with score {score}")
-                    return {
-                        'sentence': sentence[:300],
-                        'sentiment_label': label,
-                        'sentiment_score': round(sentiment_score, 3),
-                        'confidence': round(score, 3),
-                        'source': 'finbert-api'
-                    }
-            elif response.status_code == 401:
-                print(f"HF API Error 401: Invalid or missing token. Trying next URL if available.")
-                return None
-            elif response.status_code == 404:
-                print(f"HF API Error 404: Model not found at {api_url}. Trying next URL if available.")
-                return None
-            elif response.status_code == 503:
-                print(f"HF API Error 503: Model loading or unavailable at {api_url}. Trying next URL if available.")
-                return None
-            else:
-                print(f"HF API Error {response.status_code} at {api_url}: {response.text[:100]}")
-                return None
+            inputs = self.tokenizer(sentence, return_tensors="pt", truncation=True, max_length=512, padding=True)
+            
+            with torch.no_grad():
+                outputs = self.model(**inputs)
+                probabilities = torch.nn.functional.softmax(outputs.logits, dim=-1)
+                scores = probabilities[0].tolist()
                 
-        except requests.exceptions.Timeout:
-            print(f"Timeout at {api_url}")
-            return None
+                # FinBERT labels: positive, negative, neutral
+                # Index mapping depends on the model, typically: 0=positive, 1=negative, 2=neutral
+                # Or: 0=negative, 1=neutral, 2=positive
+                # Let's determine dynamically
+                label_map = {0: "positive", 1: "negative", 2: "neutral"}
+                
+                # Get the highest probability
+                max_idx = torch.argmax(probabilities[0]).item()
+                label = label_map.get(max_idx, "neutral")
+                score = scores[max_idx]
+                
+                # Convert to sentiment score (0-1 scale where 0.5 is neutral)
+                if label == "positive":
+                    sentiment_score = score
+                elif label == "negative":
+                    sentiment_score = 1 - score
+                else:
+                    sentiment_score = 0.5
+                
+                return {
+                    'sentence': sentence[:300],
+                    'sentiment_label': label,
+                    'sentiment_score': round(sentiment_score, 3),
+                    'confidence': round(score, 3),
+                    'source': 'finbert-local'
+                }
+                
         except Exception as e:
-            print(f"Sentiment API error at {api_url}: {str(e)}")
-            return None
+            print(f"FinBERT local error: {str(e)}")
+            return self._fallback_sentiment(sentence)
     
     def _fallback_sentiment(self, sentence: str) -> Dict:
-        """Rule-based fallback for when HF API is unavailable."""
+        """Rule-based fallback for when local model fails."""
         sentence_lower = sentence.lower()
         
-        # Positive financial keywords
         positive_words = [
             'growth', 'grew', 'increase', 'increased', 'rising', 'up', 'higher',
             'record', 'strong', 'confidence', 'confident', 'optimistic', 'beat',
@@ -151,7 +128,6 @@ class HuggingFaceClient:
             'outlook', 'improve', 'improved', 'improvement', 'better', 'best'
         ]
         
-        # Negative financial keywords
         negative_words = [
             'decline', 'declined', 'decrease', 'decreased', 'fall', 'fell', 'down', 'lower',
             'weak', 'weakness', 'challenge', 'headwind', 'pressure', 'stress', 'risk',
@@ -173,7 +149,6 @@ class HuggingFaceClient:
             sentiment_score = 0.5
             label = 'neutral'
         
-        # Boost confidence for clear signals
         if abs(pos_score - neg_score) >= 2:
             confidence = 0.8
         elif abs(pos_score - neg_score) >= 1:
@@ -212,14 +187,5 @@ class HuggingFaceClient:
                 'previous': previous.get('sentence_count', 0)
             }
         }
-        
-        # Add warning if either analysis used fallback
-        warnings = []
-        if current.get('warning'):
-            warnings.append(f"Current quarter: {current['warning']}")
-        if previous.get('warning'):
-            warnings.append(f"Previous quarter: {previous['warning']}")
-        if warnings:
-            result['warnings'] = warnings
         
         return result
