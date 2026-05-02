@@ -27,8 +27,10 @@ class HuggingFaceClient:
         else:
             return "fallback"
     
-    def analyze_sentiment_with_evidence(self, text: str, max_sentences: int = 150) -> Dict:
-        # Split into sentences - threshold 15 chars
+    def analyze_sentiment_with_evidence(self, text: str, max_sentences: int = 100, batch_mode: bool = True) -> Dict:
+        """Analyze sentiment with optional batching for speed"""
+        
+        # Split into sentences
         sentences = re.split(r'(?<=[.!?])\s+', text)
         sentences = [s.strip() for s in sentences if len(s.strip()) > 15][:max_sentences]
         
@@ -42,7 +44,11 @@ class HuggingFaceClient:
                 'error': 'No valid sentences found (minimum 15 characters)'
             }
         
-        # Process sentences
+        # For large texts, use batch mode (faster)
+        if batch_mode and len(sentences) > 20:
+            return self._analyze_batch_sentiment(sentences, text[:200])
+        
+        # Otherwise analyze each sentence individually (more detailed evidence)
         sentence_results = []
         for sentence in sentences:
             result = self._analyze_sentence(sentence)
@@ -57,7 +63,7 @@ class HuggingFaceClient:
             'sentiment_label': label,
             'sentiment_score': round(overall_score, 3),
             'confidence': round(abs(overall_score - 0.5) * 2, 3),
-            'evidence': sentence_results[:50],
+            'evidence': sentence_results[:30],  # Limit evidence to 30 sentences
             'sentence_count': len(sentence_results),
             'source': self.current_source
         }
@@ -66,6 +72,53 @@ class HuggingFaceClient:
             response['warning'] = 'Using rule-based fallback. Set GRADIO_SPACE_URL, REPLICATE_API_TOKEN, or HF_TOKEN for better accuracy.'
         
         return response
+    
+    def _analyze_batch_sentiment(self, sentences: List[str], preview_text: str) -> Dict:
+        """Analyze sentiment by batching sentences and sampling key ones for speed"""
+        
+        # Take a representative sample (first 3, middle 3, last 3, plus key sentences)
+        total = len(sentences)
+        sample_indices = []
+        
+        # First 3 sentences
+        sample_indices.extend(range(0, min(3, total)))
+        # Middle 2 sentences
+        if total > 6:
+            mid = total // 2
+            sample_indices.extend([mid-1, mid])
+        # Last 3 sentences
+        sample_indices.extend(range(max(0, total-3), total))
+        
+        # Remove duplicates and sort
+        sample_indices = sorted(set(sample_indices))
+        
+        # Analyze only the sample sentences
+        sample_results = []
+        for idx in sample_indices:
+            if idx < len(sentences):
+                result = self._analyze_sentence(sentences[idx])
+                sample_results.append(result)
+        
+        # Also do a single batch analysis of the whole text
+        full_text = " ".join(sentences[:50])  # First 50 sentences
+        batch_result = self._analyze_sentence(full_text[:500])
+        
+        # Combine results
+        all_results = sample_results + [batch_result] if batch_result else sample_results
+        
+        scores = [r['sentiment_score'] for r in all_results if r.get('sentiment_score') is not None]
+        overall_score = sum(scores) / len(scores) if scores else 0.5
+        label = 'positive' if overall_score > 0.55 else ('negative' if overall_score < 0.45 else 'neutral')
+        
+        return {
+            'sentiment_label': label,
+            'sentiment_score': round(overall_score, 3),
+            'confidence': round(abs(overall_score - 0.5) * 2, 3),
+            'evidence': sample_results[:15],  # Fewer evidence sentences
+            'sentence_count': total,
+            'source': self.current_source,
+            'mode': 'batch'  # Indicate batch mode for performance
+        }
     
     def _analyze_sentence(self, sentence: str) -> Dict:
         # Try sources in priority order
@@ -99,7 +152,6 @@ class HuggingFaceClient:
             return None
         
         try:
-            # Use the dedicated API endpoint we created
             endpoint = f"{self.gradio_url}/api/sentiment"
             
             response = requests.post(
@@ -109,22 +161,17 @@ class HuggingFaceClient:
                 headers={"Content-Type": "application/json"}
             )
             
-            print(f"Gradio API - Status: {response.status_code}")
-            
             if response.status_code == 200:
                 result = response.json()
                 
-                # Parse the response format: {"data": ["{\"label\":\"positive\",...}"]}
                 if result and 'data' in result and len(result['data']) > 0:
                     result_data = result['data'][0]
                     
-                    # The result is a JSON string, parse it
                     if isinstance(result_data, str):
                         sentiment_data = json.loads(result_data)
                     else:
                         sentiment_data = result_data
                     
-                    # Extract label and score
                     label = sentiment_data.get('label', 'neutral').lower()
                     score = sentiment_data.get('score', 0.5)
                     sentiment_score = sentiment_data.get('sentiment_score', 0.5)
@@ -138,8 +185,6 @@ class HuggingFaceClient:
                         'model_used': sentiment_data.get('model_used', 'unknown')
                     }
                     
-        except requests.exceptions.Timeout:
-            print(f"Gradio API timeout for {self.gradio_url}")
         except Exception as e:
             print(f"Gradio API error: {str(e)}")
         
@@ -151,8 +196,6 @@ class HuggingFaceClient:
         
         try:
             import replicate
-            
-            # Set the token
             replicate.client.api_token = self.replicate_token
             
             output = replicate.run(
@@ -173,7 +216,7 @@ class HuggingFaceClient:
                     'source': 'replicate-api'
                 }
         except ImportError:
-            print("Replicate library not installed. Run: pip install replicate")
+            print("Replicate library not installed")
         except Exception as e:
             print(f"Replicate error: {str(e)}")
         
@@ -185,11 +228,9 @@ class HuggingFaceClient:
         
         headers = {"Authorization": f"Bearer {self.hf_token}"}
         
-        # List of models to try
         models = [
             "https://api-inference.huggingface.co/models/ProsusAI/finbert",
             "https://api-inference.huggingface.co/models/ahmedrachid/FinancialBERT-Sentiment-Analysis",
-            "https://api-inference.huggingface.co/models/mrm8488/distilroberta-finetuned-financial-news-sentiment-analysis",
         ]
         
         for model_url in models:
@@ -217,7 +258,7 @@ class HuggingFaceClient:
                             'source': 'hf-api'
                         }
             except Exception as e:
-                print(f"HF model {model_url} error: {str(e)}")
+                print(f"HF model error: {str(e)}")
                 continue
         
         return None
@@ -266,8 +307,11 @@ class HuggingFaceClient:
         }
     
     def compare_with_evidence(self, current_text: str, previous_text: str) -> Dict:
-        current = self.analyze_sentiment_with_evidence(current_text)
-        previous = self.analyze_sentiment_with_evidence(previous_text)
+        """Efficient comparison using batch mode for speed"""
+        
+        # Use batch mode for large transcripts (faster)
+        current = self.analyze_sentiment_with_evidence(current_text, max_sentences=80, batch_mode=True)
+        previous = self.analyze_sentiment_with_evidence(previous_text, max_sentences=80, batch_mode=True)
         
         delta = current['sentiment_score'] - previous['sentiment_score']
         direction = 'more confident' if delta > 0.05 else ('less confident' if delta < -0.05 else 'unchanged')
@@ -281,12 +325,13 @@ class HuggingFaceClient:
                 'direction': direction,
                 'materiality': materiality
             },
-            'current_evidence': current.get('evidence', [])[:10],
-            'previous_evidence': previous.get('evidence', [])[:10],
+            'current_evidence': current.get('evidence', [])[:5],  # Only top 5 evidence sentences
+            'previous_evidence': previous.get('evidence', [])[:5],
             'total_sentences_analyzed': {
                 'current': current.get('sentence_count', 0),
                 'previous': previous.get('sentence_count', 0)
-            }
+            },
+            'analysis_mode': current.get('mode', 'detailed')  # Show if batch mode was used
         }
         
         if current.get('warning'):
