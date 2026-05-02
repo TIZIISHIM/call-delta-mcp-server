@@ -240,6 +240,47 @@ async def debug_gradio_test():
         "gradio_url": gradio_url,
         "results": results
     }
+
+@app.get("/debug/gradio_raw_test")
+async def debug_gradio_raw_test():
+    """Direct test of Gradio Space API - shows raw response."""
+    import requests
+    
+    gradio_url = os.environ.get("GRADIO_SPACE_URL", "")
+    if not gradio_url:
+        return {"error": "GRADIO_SPACE_URL not set"}
+    
+    test_text = "Our revenue grew 20% this quarter with strong margins."
+    
+    results = {}
+    
+    # Try the /api/sentiment endpoint
+    try:
+        response = requests.post(
+            f"{gradio_url}/api/sentiment",
+            json={"text": test_text},
+            timeout=10,
+            headers={"Content-Type": "application/json"}
+        )
+        results["/api/sentiment"] = {
+            "status_code": response.status_code,
+            "response_text": response.text[:500],
+            "response_json": response.json() if response.headers.get('content-type', '').startswith('application/json') else None
+        }
+    except Exception as e:
+        results["/api/sentiment"] = {"error": str(e)}
+    
+    # Try the root endpoint to see if Space is alive
+    try:
+        response = requests.get(gradio_url, timeout=10)
+        results["root_get"] = {
+            "status_code": response.status_code,
+            "html_preview": response.text[:300]
+        }
+    except Exception as e:
+        results["root_get"] = {"error": str(e)}
+    
+    return results
     
 @app.get("/sse")
 async def sse_endpoint(request: Request):
