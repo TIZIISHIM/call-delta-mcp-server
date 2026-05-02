@@ -168,6 +168,37 @@ async def debug_sentiment_test():
         )
     }
 
+@app.get("/debug/hf_test")
+async def debug_hf_test():
+    """Debug endpoint to test which FinBERT URL works."""
+    import requests
+    token = os.environ.get("HF_TOKEN", "")
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    
+    test_sentence = "This is a test sentence for sentiment analysis."
+    
+    urls_to_test = [
+        "https://api-inference.huggingface.co/models/ProsusAI/finbert",
+        "https://api-inference.huggingface.co/models/finbert/finbert",
+        "https://api-inference.huggingface.co/models/yiyanghkust/finbert-tone",
+    ]
+    
+    results = {}
+    for url in urls_to_test:
+        try:
+            response = requests.post(url, headers=headers, json={"inputs": test_sentence}, timeout=15)
+            results[url] = {
+                "status_code": response.status_code,
+                "response_preview": response.text[:200] if response.status_code != 200 else "Success"
+            }
+        except Exception as e:
+            results[url] = {"status_code": "error", "error": str(e)}
+    
+    return {
+        "hf_token_set": bool(token),
+        "token_preview": token[:10] + "..." if token else "not set",
+        "results": results
+    }
 
 @app.get("/sse")
 async def sse_endpoint(request: Request):
