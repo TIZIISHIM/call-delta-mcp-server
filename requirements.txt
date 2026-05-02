@@ -9,5 +9,4 @@ sse-starlette>=2.0.0
 yfinance>=0.2.0
 apify-client>=1.0.0
 defeatbeta-api>=0.0.52
-transformers>=4.30.0
-torch>=2.0.0
+
