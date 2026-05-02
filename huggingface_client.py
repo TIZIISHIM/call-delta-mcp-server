@@ -10,13 +10,21 @@ class HuggingFaceClient:
         self.hf_api_failed = False
         self.fallback_reason = None
         
+        # List of FinBERT models to try in order
+        self.finbert_urls = [
+            "https://api-inference.huggingface.co/models/ProsusAI/finbert",
+            "https://api-inference.huggingface.co/models/finbert/finbert",
+            "https://api-inference.huggingface.co/models/yiyanghkust/finbert-tone",
+        ]
+        self.current_url_index = 0
+        
         if not self.api_token:
             print("WARNING: HF_TOKEN not set. Using rule-based fallback for sentiment analysis.")
             self.hf_api_failed = True
             self.fallback_reason = "HF_TOKEN not set in environment variables"
     
     def analyze_sentiment_with_evidence(self, text: str, max_sentences: int = 150) -> Dict:
-        # Split into sentences - threshold lowered to 15 chars (Alex's requirement)
+        # Split into sentences - threshold lowered to 15 chars
         sentences = re.split(r'(?<=[.!?])\s+', text)
         sentences = [s.strip() for s in sentences if len(s.strip()) > 15][:max_sentences]
         
@@ -58,7 +66,7 @@ class HuggingFaceClient:
             'sentence_count': len(sentence_results)
         }
         
-        # Add error signal if fallback was used (Alex's requirement #2)
+        # Add error signal if fallback was used
         if self.hf_api_failed:
             response['warning'] = f"Sentiment analysis using rule-based fallback. Reason: {self.fallback_reason}. For full FinBERT accuracy, set HF_TOKEN environment variable."
         
@@ -69,7 +77,21 @@ class HuggingFaceClient:
         if self.hf_api_failed:
             return self._fallback_sentiment(sentence)
         
-        api_url = "https://api-inference.huggingface.co/models/ProsusAI/finbert"
+        # Try current FinBERT URL, if fails try next ones
+        for i in range(self.current_url_index, len(self.finbert_urls)):
+            url = self.finbert_urls[i]
+            result = self._call_finbert_api(url, sentence)
+            if result:
+                self.current_url_index = i
+                return result
+        
+        # All URLs failed, switch to fallback
+        print(f"All FinBERT URLs failed. Falling back to rule-based sentiment.")
+        self.hf_api_failed = True
+        self.fallback_reason = "All FinBERT API endpoints returned errors"
+        return self._fallback_sentiment(sentence)
+    
+    def _call_finbert_api(self, api_url: str, sentence: str) -> Dict:
         truncated_sentence = sentence[:500]
         
         try:
@@ -88,6 +110,7 @@ class HuggingFaceClient:
                     else:
                         sentiment_score = 0.5
                     
+                    print(f"FinBERT API ({api_url}) returned {label} with score {score}")
                     return {
                         'sentence': sentence[:300],
                         'sentiment_label': label,
@@ -96,25 +119,24 @@ class HuggingFaceClient:
                         'source': 'finbert-api'
                     }
             elif response.status_code == 401:
-                print(f"HF API Error 401: Invalid or missing token. Falling back to rule-based sentiment.")
-                self.hf_api_failed = True
-                self.fallback_reason = "HF API returned 401 - invalid or missing token"
-                return self._fallback_sentiment(sentence)
+                print(f"HF API Error 401: Invalid or missing token. Trying next URL if available.")
+                return None
+            elif response.status_code == 404:
+                print(f"HF API Error 404: Model not found at {api_url}. Trying next URL if available.")
+                return None
             elif response.status_code == 503:
-                print(f"HF API Error 503: Model loading or unavailable. Falling back to rule-based sentiment.")
-                self.hf_api_failed = True
-                self.fallback_reason = "HF API returned 503 - model unavailable or cold start"
-                return self._fallback_sentiment(sentence)
+                print(f"HF API Error 503: Model loading or unavailable at {api_url}. Trying next URL if available.")
+                return None
             else:
-                print(f"HF API Error {response.status_code}: {response.text[:100]}")
-                return self._fallback_sentiment(sentence)
+                print(f"HF API Error {response.status_code} at {api_url}: {response.text[:100]}")
+                return None
                 
         except requests.exceptions.Timeout:
-            print(f"Timeout analyzing sentence. Falling back to rule-based sentiment.")
-            return self._fallback_sentiment(sentence)
+            print(f"Timeout at {api_url}")
+            return None
         except Exception as e:
-            print(f"Sentiment API error: {str(e)}")
-            return self._fallback_sentiment(sentence)
+            print(f"Sentiment API error at {api_url}: {str(e)}")
+            return None
     
     def _fallback_sentiment(self, sentence: str) -> Dict:
         """Rule-based fallback for when HF API is unavailable."""
