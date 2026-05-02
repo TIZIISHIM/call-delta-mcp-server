@@ -209,6 +209,38 @@ async def debug_replicate_status():
         "hf_token_set": bool(os.environ.get("HF_TOKEN", "")),
         "gradio_url_set": bool(os.environ.get("GRADIO_SPACE_URL", ""))
     }
+
+@app.get("/debug/gradio_test")
+async def debug_gradio_test():
+    gradio_url = os.environ.get("GRADIO_SPACE_URL", "")
+    if not gradio_url:
+        return {"error": "GRADIO_SPACE_URL not set"}
+    
+    test_text = "Our revenue grew 20% this quarter."
+    
+    # Try different API paths
+    results = {}
+    
+    for path in ["/api/predict/sentiment_analysis", "/gradio_api/predict/sentiment_analysis", "/predict/sentiment_analysis"]:
+        try:
+            response = requests.post(
+                f"{gradio_url}{path}",
+                json={"data": [test_text]},
+                timeout=10,
+                headers={"Content-Type": "application/json"}
+            )
+            results[path] = {
+                "status": response.status_code,
+                "response": response.text[:200] if response.status_code == 200 else None
+            }
+        except Exception as e:
+            results[path] = {"error": str(e)}
+    
+    return {
+        "gradio_url": gradio_url,
+        "results": results
+    }
+    
 @app.get("/sse")
 async def sse_endpoint(request: Request):
     session_id = os.urandom(16).hex()
