@@ -134,6 +134,41 @@ async def debug_yfinance():
         return {"yfinance_installed": True, "error": str(e)}
 
 
+@app.get("/debug/sentiment/test")
+async def debug_sentiment_test():
+    """Debug endpoint to test sentiment analysis with Alex's test inputs."""
+    positive_input = "Our growth accelerated this quarter with record revenue and expanding gross margins across all segments. We are extremely confident in our outlook."
+    negative_input = "Demand collapsed this quarter. Revenue fell 40 percent. Margins are under severe pressure and we are losing key customers to competitors."
+    
+    positive_result = sentiment_client.analyze_sentiment_with_evidence(positive_input)
+    negative_result = sentiment_client.analyze_sentiment_with_evidence(negative_input)
+    
+    return {
+        "positive_input": positive_input,
+        "positive_result": {
+            "sentiment_label": positive_result.get('sentiment_label'),
+            "sentiment_score": positive_result.get('sentiment_score'),
+            "confidence": positive_result.get('confidence'),
+            "warning": positive_result.get('warning'),
+            "source": positive_result.get('evidence', [{}])[0].get('source', 'unknown') if positive_result.get('evidence') else 'none'
+        },
+        "negative_input": negative_input,
+        "negative_result": {
+            "sentiment_label": negative_result.get('sentiment_label'),
+            "sentiment_score": negative_result.get('sentiment_score'),
+            "confidence": negative_result.get('confidence'),
+            "warning": negative_result.get('warning'),
+            "source": negative_result.get('evidence', [{}])[0].get('source', 'unknown') if negative_result.get('evidence') else 'none'
+        },
+        "test_passed": (
+            positive_result.get('sentiment_label') == 'positive' and
+            negative_result.get('sentiment_label') == 'negative' and
+            positive_result.get('sentiment_score', 0) > 0.55 and
+            negative_result.get('sentiment_score', 0) < 0.45
+        )
+    }
+
+
 @app.get("/sse")
 async def sse_endpoint(request: Request):
     session_id = os.urandom(16).hex()
