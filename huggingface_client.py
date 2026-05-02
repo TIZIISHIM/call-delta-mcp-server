@@ -94,52 +94,56 @@ class HuggingFaceClient:
         return self._fallback_sentiment(sentence)
     
     def _call_gradio(self, sentence: str) -> Dict:
-    """Call Gradio Space using its native API"""
-    if not self.gradio_url:
-        return None
-    
-    try:
-        # Gradio's native API endpoint (works with any Space)
-        endpoint = f"{self.gradio_url}/api/predict"
+        """Call Gradio Space's API endpoint directly"""
+        if not self.gradio_url:
+            return None
         
-        response = requests.post(
-            endpoint,
-            json={"data": [sentence[:500]]},
-            timeout=30,
-            headers={"Content-Type": "application/json"}
-        )
-        
-        print(f"Gradio native API - Status: {response.status_code}")
-        
-        if response.status_code == 200:
-            result = response.json()
+        try:
+            # Use the dedicated API endpoint we created
+            endpoint = f"{self.gradio_url}/api/sentiment"
             
-            # Gradio returns {"data": ["result_string"]}
-            if result and 'data' in result and len(result['data']) > 0:
-                result_data = result['data'][0]
+            response = requests.post(
+                endpoint,
+                json={"text": sentence[:500]},
+                timeout=15,
+                headers={"Content-Type": "application/json"}
+            )
+            
+            print(f"Gradio API - Status: {response.status_code}")
+            
+            if response.status_code == 200:
+                result = response.json()
                 
-                # Parse the JSON string result
-                if isinstance(result_data, str):
-                    sentiment_data = json.loads(result_data)
-                else:
-                    sentiment_data = result_data
-                
-                label = sentiment_data.get('label', 'neutral').lower()
-                score = sentiment_data.get('score', 0.5)
-                sentiment_score = sentiment_data.get('sentiment_score', 0.5)
-                
-                return {
-                    'sentence': sentence[:300],
-                    'sentiment_label': label,
-                    'sentiment_score': round(sentiment_score, 3),
-                    'confidence': round(score, 3),
-                    'source': 'gradio-space'
-                }
-                
-    except Exception as e:
-        print(f"Gradio native API error: {str(e)}")
-    
-    return None
+                # Parse the response format: {"data": ["{\"label\":\"positive\",...}"]}
+                if result and 'data' in result and len(result['data']) > 0:
+                    result_data = result['data'][0]
+                    
+                    # The result is a JSON string, parse it
+                    if isinstance(result_data, str):
+                        sentiment_data = json.loads(result_data)
+                    else:
+                        sentiment_data = result_data
+                    
+                    # Extract label and score
+                    label = sentiment_data.get('label', 'neutral').lower()
+                    score = sentiment_data.get('score', 0.5)
+                    sentiment_score = sentiment_data.get('sentiment_score', 0.5)
+                    
+                    return {
+                        'sentence': sentence[:300],
+                        'sentiment_label': label,
+                        'sentiment_score': round(sentiment_score, 3),
+                        'confidence': round(score, 3),
+                        'source': 'gradio-space',
+                        'model_used': sentiment_data.get('model_used', 'unknown')
+                    }
+                    
+        except requests.exceptions.Timeout:
+            print(f"Gradio API timeout for {self.gradio_url}")
+        except Exception as e:
+            print(f"Gradio API error: {str(e)}")
+        
+        return None
     
     def _call_replicate(self, sentence: str) -> Dict:
         if not self.replicate_token:
